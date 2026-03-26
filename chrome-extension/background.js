@@ -11,11 +11,13 @@
  *                             快捷键(再次) → detach + 上报真实数据
  *
  * CDP 数据流：
- *   attach → Network.enable + Log.enable
+ *   attach → Network.enable + Log.enable + Tracing.start（若配置需要）
  *         → onEvent: Network.requestWillBeSent  → requestMap[id] 存入请求基础信息
  *         → onEvent: Network.responseReceived   → 与 requestMap 合并，推入 network_logs
  *         → onEvent: Log.entryAdded             → 推入 console_logs
- *   detach → 打包 network_logs + console_logs → wsSend
+ *         → onEvent: Tracing.dataCollected      → 流式透传至 Node.js Server (tracing_chunk)
+ *   detach → Tracing.end → tracingComplete → 发送 tracing_complete 信号
+ *         → Server 端执行 extractLongTasks 脱水算法
  */
 
 // ── 常量 ────────────────────────────────────────────────────────────────────
@@ -95,6 +97,13 @@ const capture = {
 
   /** @type {Array<object>}  Log.entryAdded 收集的控制台条目 */
   console_logs: [],
+
+  /**
+   * tracingComplete 的 resolve 回调。
+   * 在 Tracing.end 发送后，等待此 Promise resolve 才能确认所有数据块已流式发送完毕。
+   * @type {Function|null}
+   */
+  tracingCompleteResolve: null,
 };
 
 /** 重置缓冲区，供每次新会话开始时调用 */
@@ -102,6 +111,7 @@ function resetCapture() {
   capture.requestMap.clear();
   capture.network_logs = [];
   capture.console_logs = [];
+  capture.tracingCompleteResolve = null;
 }
 
 // ── 脱敏拦截器 ───────────────────────────────────────────────────────────────
@@ -309,7 +319,16 @@ async function attachDebugger(tabId, config) {
   await cdpSend(tabId, "Log.enable");
   console.log("[CDP] Log.enable sent");
 
-  // 4. 按配置决定是否刷新页面，以便从 navigationStart 起完整捕获
+  // 4. 如果配置要求抓取性能数据，开启 Tracing 域
+  if (config?.types?.includes("performance")) {
+    await cdpSend(tabId, "Tracing.start", {
+      categories: "-*,devtools.timeline,v8.execute,blink.user_timing,v8",
+      options:    "sampling-frequency=10000",  // 10kHz 采样
+    });
+    console.log("[CDP] Tracing.start sent");
+  }
+
+  // 5. 按配置决定是否刷新页面，以便从 navigationStart 起完整捕获
   if (config?.action_mode === "reload") {
     chrome.tabs.reload(tabId, {}, () => {
       if (chrome.runtime.lastError) {
@@ -425,6 +444,27 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       break;
     }
 
+    // ── Tracing.dataCollected ─────────────────────────────────────────
+    // 流式透传：收到数据块立刻通过 WS 转发给 Node.js Server，不在内存中留存。
+    case "Tracing.dataCollected": {
+      if (Array.isArray(params.value)) {
+        wsSend({ type: "tracing_chunk", data: params.value });
+      }
+      break;
+    }
+
+    // ── Tracing.tracingComplete ────────────────────────────────────────
+    // 所有数据块已 flush 完毕，通知 Server 可以执行脱水算法。
+    case "Tracing.tracingComplete": {
+      console.log("[CDP] Tracing complete, all chunks streamed to server");
+      wsSend({ type: "tracing_complete" });
+      if (capture.tracingCompleteResolve) {
+        capture.tracingCompleteResolve();
+        capture.tracingCompleteResolve = null;
+      }
+      break;
+    }
+
     default:
       // 其他未关注的 CDP 事件，静默忽略
       break;
@@ -473,8 +513,31 @@ async function handleToggleCapture() {
   if (state.phase === "CAPTURING") {
     const tabId  = state.activeTabId;
     const config = state.config;
+    const hasPerformance = config?.types?.includes("performance");
 
-    // 先 detach，停止 CDP 事件流，确保之后不再有新事件进入缓冲区
+    // 如果开启了 Tracing，先发送 Tracing.end 并等待所有数据块流式发送完毕
+    if (hasPerformance) {
+      try {
+        state.statusMessage = "正在停止 Tracing 并等待数据流式传输完成...";
+        broadcastState();
+
+        // 创建 tracingComplete Promise，设置 15s 超时防止永久挂起
+        const tracingDone = new Promise((resolve) => {
+          capture.tracingCompleteResolve = resolve;
+        });
+        const timeout = new Promise((resolve) => setTimeout(resolve, 15000));
+
+        await cdpSend(tabId, "Tracing.end");
+        console.log("[CDP] Tracing.end sent, waiting for tracingComplete...");
+
+        await Promise.race([tracingDone, timeout]);
+        console.log("[CDP] Tracing data streaming completed");
+      } catch (err) {
+        console.warn("[Perf] Tracing end/stream failed:", err.message);
+      }
+    }
+
+    // detach debugger，停止 CDP 事件流
     await detachDebugger(tabId);
 
     // 将仍在 requestMap 中（已有请求但未收到响应）的条目也纳入结果，
@@ -490,8 +553,10 @@ async function handleToggleCapture() {
       });
     }
 
-    // 打包完整 trace 对象并通过 WS 发送给 MCP Server
+    // 打包网络/日志数据并通过 WS 发送给 MCP Server
+    // 注意：Tracing 数据已在 CAPTURING 期间通过流式 tracing_chunk 实时发送，此处不再包含
     const trace = {
+      type: "capture_result",
       meta: {
         capturedAt: new Date().toISOString(),
         tabId,
@@ -507,7 +572,7 @@ async function handleToggleCapture() {
     };
 
     const sent = wsSend(trace);
-    const summary = `已上报 ${trace.meta.stats.network_count} 条网络请求、${trace.meta.stats.console_count} 条日志。`;
+    const summary = `已上报 ${trace.meta.stats.network_count} 条网络请求、${trace.meta.stats.console_count} 条日志。性能数据已流式传输至服务端处理。`;
     console.log(`[Command] Trace sent via WS: ${sent}, network=${capture.network_logs.length}, console=${capture.console_logs.length}`);
 
     // 清空状态
