@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome DevTools Capturer",
+  "version": "1.0.0",
+  "description": "Captures DevTools data and forwards it to the local MCP Server via WebSocket.",
+
+  "permissions": [
+    "debugger",
+    "tabs",
+    "activeTab"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "commands": {
+    "toggle-capture": {
+      "suggested_key": {
+        "default": "Alt+Shift+C",
+        "mac": "Alt+Shift+C"
+      },
+      "description": "Arm / Start capture  →  Stop capture & upload results"
+    }
+  },
+
+  "action": {
+    "default_title": "DevTools Capturer",
+    "default_popup": "popup.html"
+  }
+}
