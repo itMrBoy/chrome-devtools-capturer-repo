@@ -46,20 +46,21 @@ allowed-tools:
 claude mcp list 2>/dev/null | grep "chrome-devtools-capturer"
 ```
 
-1. **如果未找到 `chrome-devtools-capturer`**（注意：必须是这个精确名称，其他名称如 `chrome-devtools` 不算），则自动注册。skill 目录固定为 `~/.claude/skills/chrome-devtools-capturer/`：
+2. **如果未找到 `chrome-devtools-capturer`**（注意：必须是这个精确名称，其他名称如 `chrome-devtools` 不算），则自动注册。skill 目录固定为 `~/.claude/skills/chrome-devtools-capturer/`：
 
 ```bash
 claude mcp add chrome-devtools-capturer node ~/.claude/skills/chrome-devtools-capturer/scripts/mcp-server/start.js
 ```
 
-注册后告知用户：
+3. **注册后告知用户：**
 
 > MCP Server `chrome-devtools-capturer` 已自动注册。**请重启 Claude Code** 以使 MCP 工具生效，然后重新描述你的问题。
 
-1. **如果已注册但未显示 "Connected"**，提示用户检查 MCP 状态（`/mcp` 命令）。
-2. **只有确认 MCP Server 已注册且连接正常后**，才继续执行下面的四步工作流。
+4. **如果已注册但未显示 "Connected"**，提示用户检查 MCP 状态（`/mcp` 命令）。
 
-> ⚠️ 这一步是强制的。跳过此步骤会导致 `mcp__chrome-devtools-capturer__`\* 工具不可用，整个 skill 无法工作。
+5. **只有确认 MCP Server 已注册且连接正常后**，才继续执行下面的四步工作流。
+
+> ⚠️ Step 0是强制的。跳过此步骤会导致 `mcp__chrome-devtools-capturer__`\* 工具不可用，整个 skill 无法工作。
 
 ---
 

@@ -15,7 +15,7 @@ VibeProfiler (Vibe Coding DevTools 抓取器)
 
 1. **Local MCP Server (本地 Node.js 服务)**：暴露 MCP Tools，维护状态机，负责下发配置、接收数据并落盘到 `.vibe_context/` 目录。
 
-2. **VibeProfiler Extension (浏览器扩展 Manifest V3)**：接收配置进入待命态，监听快捷键触发 `chrome.debugger.attach`，抓取 CDP 数据流，执行本地脱敏，并将其格式化为 LLM 友好的结构后回传。
+2. **Chrome DevTools Capturer Extension (chrome 浏览器扩展 Manifest V3)**：接收配置进入待命态，监听快捷键触发 `chrome.debugger.attach`，抓取 CDP 数据流，执行本地脱敏，并将其格式化为 LLM 友好的结构后回传。
 
 ## 3. 核心业务流程 (预武装模式 Pre-Armed Pattern)
 
