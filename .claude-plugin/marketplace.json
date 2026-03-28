@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "name": "chrome-devtools-capturer-plugin",
+  "description": "Chrome DevTools Capturer plugin marketplace",
+  "owner": {
+    "name": "itMrBoy"
+  },
+  "plugins": [
+    {
+      "name": "chrome-devtools-capturer",
+      "version": "1.0.0",
+      "source": "./skills",
+      "description": "Browser runtime capture & analysis for vibe coding — network, console, performance via MCP + Chrome extension"
+    }
+  ]
+}
