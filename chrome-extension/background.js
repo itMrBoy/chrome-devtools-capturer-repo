@@ -73,6 +73,15 @@ function broadcastState() {
 
 /** 返回供 popup 使用的状态快照（仅暴露必要字段） */
 function getStateSnapshot() {
+	// 主动校验 WS 实际连接状态，防止 Service Worker 挂起恢复后内存值过时
+	const actuallyConnected = ws && ws.readyState === WebSocket.OPEN;
+	if (state.wsConnected !== actuallyConnected) {
+		state.wsConnected = actuallyConnected;
+		if (!actuallyConnected) {
+			state.statusMessage = "WebSocket 已断开，正在重连...";
+			connectWS();
+		}
+	}
 	return {
 		phase: state.phase,
 		wsConnected: state.wsConnected,
@@ -703,4 +712,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 console.log("[BG] Service worker started");
 updateBadge("UNARMED");
-connectWS();
+
+// Service Worker 每次唤醒都会执行此初始化块。
+// 检查 WS 是否已断开（被挂起期间系统强制切断），需要时自动重连。
+if (!ws || ws.readyState !== WebSocket.OPEN) {
+	state.wsConnected = false;
+	connectWS();
+} else {
+	console.log("[BG] WebSocket still connected, skipping reconnect");
+}
