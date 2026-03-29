@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Captures DevTools data and forwards it to the local MCP Server via WebSocket.",
 
-  "permissions": ["debugger", "tabs", "activeTab"],
+  "permissions": ["debugger", "tabs", "activeTab", "alarms"],
 
   "background": {
     "service_worker": "background.js",

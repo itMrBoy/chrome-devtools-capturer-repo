@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__cleanup_vibe_workspace",
+      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__analyze_capture_results",
+      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__prepare_capture_session",
+      "Bash(python3:*)",
+      "Bash(python -c \":*)"
+    ]
+  }
+}

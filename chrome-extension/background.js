@@ -26,6 +26,7 @@ const WS_URL = "ws://localhost:8765";
 const WS_RETRY_BASE = 1000; // 初始重连间隔 1s
 const WS_RETRY_MAX = 30000; // 最大重连间隔 30s
 const DEBUGGER_VER = "1.3"; // CDP 协议版本
+const KEEPALIVE_ALARM = "ws-keepalive"; // Service Worker 保活闹钟名
 
 // ── 扩展状态 ─────────────────────────────────────────────────────────────────
 
@@ -198,6 +199,8 @@ function connectWS() {
 		wsRetryDelay = WS_RETRY_BASE;
 		state.wsConnected = true;
 		state.statusMessage = "MCP Server 已连接，等待下发配置...";
+		chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+		console.log("[Keepalive] Alarm started");
 		broadcastState();
 	});
 
@@ -227,6 +230,8 @@ function connectWS() {
 		console.warn(`[WS] Disconnected (code=${event.code}). Retry in ${wsRetryDelay}ms...`);
 		state.wsConnected = false;
 		state.statusMessage = `MCP Server 连接断开，已等待${wsRetryDelay / 1000}s，即将开始重连...`;
+		chrome.alarms.clear(KEEPALIVE_ALARM);
+		console.log("[Keepalive] Alarm stopped");
 		broadcastState();
 		scheduleReconnect();
 	});
@@ -705,6 +710,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 			.catch((err) => console.error("[BG] TOGGLE_CAPTURE error:", err))
 			.finally(() => sendResponse(getStateSnapshot()));
 		return true; // 异步响应
+	}
+});
+
+// ── Service Worker 保活 ──────────────────────────────────────────────────────
+// chrome.alarms 即使 SW 被挂起也能唤醒它，用于定期检查并恢复 WS 连接。
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+	if (alarm.name === KEEPALIVE_ALARM) {
+		if (!ws || ws.readyState !== WebSocket.OPEN) {
+			console.log("[Keepalive] WS disconnected, reconnecting...");
+			connectWS();
+		}
 	}
 });
 
