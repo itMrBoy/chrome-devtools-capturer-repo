@@ -614,7 +614,7 @@ async function handleToggleCapture() {
 		const trace = {
 			type: "capture_result",
 			meta: {
-				capturedAt: new Date().toISOString(),
+				capturedAt: new Date().toLocaleString("zh-CN", { hour12: false, timeZoneName: "short" }),
 				tabId,
 				config,
 				source: "chrome-devtools-capturer-extension",
