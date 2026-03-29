@@ -41,7 +41,7 @@ git clone https://github.com/itMrBoy/chrome-devtools-capturer-repo.git
 
 ```bash
 # 1. 注册 marketplace（只需一次）
-/plugin marketplace add itMrBoy/chrome-devtools-capturer-repo
+/plugin marketplace add https://github.com/itMrBoy/chrome-devtools-capturer-repo
 
 # 2. 安装插件
 /plugin install chrome-devtools-capturer@chrome-devtools-capturer-repo
