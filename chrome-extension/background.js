@@ -26,7 +26,8 @@ const WS_URL = "ws://localhost:8765";
 const WS_RETRY_BASE = 1000; // 初始重连间隔 1s
 const WS_RETRY_MAX = 30000; // 最大重连间隔 30s
 const DEBUGGER_VER = "1.3"; // CDP 协议版本
-const KEEPALIVE_ALARM = "ws-keepalive"; // Service Worker 保活闹钟名
+const KEEPALIVE_ALARM = "ws-keepalive"; // Service Worker 保活闹钟名（常驻）
+const RECONNECT_ALARM = "ws-reconnect"; // 重连闹钟名（SW 挂起时兜底 setTimeout）
 
 // ── 扩展状态 ─────────────────────────────────────────────────────────────────
 
@@ -35,23 +36,23 @@ const KEEPALIVE_ALARM = "ws-keepalive"; // Service Worker 保活闹钟名
  * Service Worker 可能被浏览器随时挂起/唤醒，activeTabId 是恢复现场的关键字段。
  */
 const state = {
-	/** @type {"UNARMED" | "ARMED" | "CAPTURING"} */
-	phase: "UNARMED",
+  /** @type {"UNARMED" | "ARMED" | "CAPTURING"} */
+  phase: "UNARMED",
 
-	/** 从 WS 服务端接收到的完整配置对象 */
-	config: null,
+  /** 从 WS 服务端接收到的完整配置对象 */
+  config: null,
 
-	/** 当前正在调试的 Tab ID，CAPTURING 阶段有效 */
-	activeTabId: null,
+  /** 当前正在调试的 Tab ID，CAPTURING 阶段有效 */
+  activeTabId: null,
 
-	/** WS 是否处于连接状态，供 popup 渲染用 */
-	wsConnected: false,
+  /** WS 是否处于连接状态，供 popup 渲染用 */
+  wsConnected: false,
 
-	/**
-	 * 最近一次面向用户的即时状态消息。
-	 * popup 打开时会拉取此字段，显示最新的操作结果或错误原因。
-	 */
-	statusMessage: "等待 MCP Server 下发配置...",
+  /**
+   * 最近一次面向用户的即时状态消息。
+   * popup 打开时会拉取此字段，显示最新的操作结果或错误原因。
+   */
+  statusMessage: "等待 MCP Server 下发配置...",
 };
 
 // ── 状态广播 ─────────────────────────────────────────────────────────────────
@@ -64,31 +65,32 @@ const state = {
  * 这是正常情况，忽略即可，不能 throw。
  */
 function broadcastState() {
-	chrome.runtime.sendMessage({
-		type: "STATE_UPDATE",
-		state: getStateSnapshot()
-	},
-		() => void chrome.runtime.lastError // 消费 lastError，避免 Chrome 打印警告
-	);
+  chrome.runtime.sendMessage(
+    {
+      type: "STATE_UPDATE",
+      state: getStateSnapshot(),
+    },
+    () => void chrome.runtime.lastError, // 消费 lastError，避免 Chrome 打印警告
+  );
 }
 
 /** 返回供 popup 使用的状态快照（仅暴露必要字段） */
 function getStateSnapshot() {
-	// 主动校验 WS 实际连接状态，防止 Service Worker 挂起恢复后内存值过时
-	const actuallyConnected = ws && ws.readyState === WebSocket.OPEN;
-	if (state.wsConnected !== actuallyConnected) {
-		state.wsConnected = actuallyConnected;
-		if (!actuallyConnected) {
-			state.statusMessage = "WebSocket 已断开，正在重连...";
-			connectWS();
-		}
-	}
-	return {
-		phase: state.phase,
-		wsConnected: state.wsConnected,
-		config: state.config,
-		statusMessage: state.statusMessage,
-	};
+  // 主动校验 WS 实际连接状态，防止 Service Worker 挂起恢复后内存值过时
+  const actuallyConnected = ws && ws.readyState === WebSocket.OPEN;
+  if (state.wsConnected !== actuallyConnected) {
+    state.wsConnected = actuallyConnected;
+    if (!actuallyConnected) {
+      state.statusMessage = "WebSocket 已断开，正在重连...";
+      connectWS();
+    }
+  }
+  return {
+    phase: state.phase,
+    wsConnected: state.wsConnected,
+    config: state.config,
+    statusMessage: state.statusMessage,
+  };
 }
 
 // ── 采集缓冲区 ───────────────────────────────────────────────────────────────
@@ -101,29 +103,29 @@ function getStateSnapshot() {
  *             CDP 的请求/响应事件是异步分离的，必须靠 requestId 关联。
  */
 const capture = {
-	/** @type {Map<string, object>}  key = CDP requestId */
-	requestMap: new Map(),
+  /** @type {Map<string, object>}  key = CDP requestId */
+  requestMap: new Map(),
 
-	/** @type {Array<object>}  已完成（拿到响应）的网络请求精简记录 */
-	network_logs: [],
+  /** @type {Array<object>}  已完成（拿到响应）的网络请求精简记录 */
+  network_logs: [],
 
-	/** @type {Array<object>}  Log.entryAdded 收集的控制台条目 */
-	console_logs: [],
+  /** @type {Array<object>}  Log.entryAdded 收集的控制台条目 */
+  console_logs: [],
 
-	/**
-	 * tracingComplete 的 resolve 回调。
-	 * 在 Tracing.end 发送后，等待此 Promise resolve 才能确认所有数据块已流式发送完毕。
-	 * @type {Function|null}
-	 */
-	tracingCompleteResolve: null,
+  /**
+   * tracingComplete 的 resolve 回调。
+   * 在 Tracing.end 发送后，等待此 Promise resolve 才能确认所有数据块已流式发送完毕。
+   * @type {Function|null}
+   */
+  tracingCompleteResolve: null,
 };
 
 /** 重置缓冲区，供每次新会话开始时调用 */
 function resetCapture() {
-	capture.requestMap.clear();
-	capture.network_logs = [];
-	capture.console_logs = [];
-	capture.tracingCompleteResolve = null;
+  capture.requestMap.clear();
+  capture.network_logs = [];
+  capture.console_logs = [];
+  capture.tracingCompleteResolve = null;
 }
 
 // ── 脱敏拦截器 ───────────────────────────────────────────────────────────────
@@ -144,14 +146,16 @@ function resetCapture() {
  * @returns {string}
  */
 function maskSensitive(text) {
-	if (typeof text !== "string") return text;
+  if (typeof text !== "string") return text;
 
-	return text
-		// Authorization: Bearer eyJhbGci...  →  Authorization: Bearer [MASKED]
-		// 也兼容 Token / Basic 等其他 scheme
-		.replace(/(Authorization\s*:\s*\S+\s+)\S+/gi, "$1[MASKED]")
-		// Cookie: session=abc; token=xyz  →  Cookie: [MASKED]
-		.replace(/(Cookie\s*:\s*).+/gi, "$1[MASKED]");
+  return (
+    text
+      // Authorization: Bearer eyJhbGci...  →  Authorization: Bearer [MASKED]
+      // 也兼容 Token / Basic 等其他 scheme
+      .replace(/(Authorization\s*:\s*\S+\s+)\S+/gi, "$1[MASKED]")
+      // Cookie: session=abc; token=xyz  →  Cookie: [MASKED]
+      .replace(/(Cookie\s*:\s*).+/gi, "$1[MASKED]")
+  );
 }
 
 /**
@@ -161,18 +165,18 @@ function maskSensitive(text) {
  * @returns {Record<string, string>}
  */
 function maskHeaders(headers) {
-	if (!headers) return {};
-	const result = {};
-	for (const [key, value] of Object.entries(headers)) {
-		// 对键名敏感的头直接替换值，其余字段走通用 maskSensitive
-		const lowerKey = key.toLowerCase();
-		if (lowerKey === "authorization" || lowerKey === "cookie") {
-			result[key] = "[MASKED]";
-		} else {
-			result[key] = maskSensitive(value);
-		}
-	}
-	return result;
+  if (!headers) return {};
+  const result = {};
+  for (const [key, value] of Object.entries(headers)) {
+    // 对键名敏感的头直接替换值，其余字段走通用 maskSensitive
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "authorization" || lowerKey === "cookie") {
+      result[key] = "[MASKED]";
+    } else {
+      result[key] = maskSensitive(value);
+    }
+  }
+  return result;
 }
 
 // ── WebSocket 客户端 ─────────────────────────────────────────────────────────
@@ -186,66 +190,86 @@ let wsRetryTimer = null;
  * 每次（重）连接都创建新的 WebSocket 实例。
  */
 function connectWS() {
-	if (wsRetryTimer) {
-		clearTimeout(wsRetryTimer);
-		wsRetryTimer = null;
-	}
+  // 重入保护：如果 WS 已经连接或正在连接中，跳过
+  if (
+    ws &&
+    (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+  ) {
+    console.log(
+      `[WS] Already ${ws.readyState === WebSocket.OPEN ? "connected" : "connecting"}, skipping`,
+    );
+    return;
+  }
 
-	console.log(`[WS] Connecting to ${WS_URL}...`);
-	ws = new WebSocket(WS_URL);
+  if (wsRetryTimer) {
+    clearTimeout(wsRetryTimer);
+    wsRetryTimer = null;
+  }
 
-	ws.addEventListener("open", () => {
-		console.log("[WS] Connected");
-		wsRetryDelay = WS_RETRY_BASE;
-		state.wsConnected = true;
-		state.statusMessage = "MCP Server 已连接，等待下发配置...";
-		chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
-		console.log("[Keepalive] Alarm started");
-		broadcastState();
-	});
+  console.log(`[WS] Connecting to ${WS_URL}...`);
+  ws = new WebSocket(WS_URL);
 
-	/**
-	 * 接收 MCP Server 下发的捕获配置，切换为武装态。
-	 *
-	 * 期望格式：
-	 * { target: string, types: string[], action_mode: "reload" | "manual" | "record" }
-	 */
-	ws.addEventListener("message", (event) => {
-		let payload;
-		try {
-			payload = JSON.parse(event.data);
-		} catch {
-			console.warn("[WS] Non-JSON message ignored:", event.data);
-			return;
-		}
-		console.log("[WS] Config received →", payload);
-		state.config = payload;
-		state.phase = "ARMED";
-		state.statusMessage = `配置已就绪，目标：${payload.target ?? "未指定"}。点击"开始录制"或按快捷键启动。`;
-		updateBadge("ARMED");
-		broadcastState();
-	});
+  ws.addEventListener("open", () => {
+    console.log("[WS] Connected");
+    wsRetryDelay = WS_RETRY_BASE;
+    state.wsConnected = true;
+    state.statusMessage = "MCP Server 已连接，等待下发配置...";
+    // 连接成功，清除重连兜底 alarm（keepalive alarm 保持不变）
+    chrome.alarms.clear(RECONNECT_ALARM);
+    broadcastState();
+  });
 
-	ws.addEventListener("close", (event) => {
-		console.warn(`[WS] Disconnected (code=${event.code}). Retry in ${wsRetryDelay}ms...`);
-		state.wsConnected = false;
-		state.statusMessage = `MCP Server 连接断开，已等待${wsRetryDelay / 1000}s，即将开始重连...`;
-		chrome.alarms.clear(KEEPALIVE_ALARM);
-		console.log("[Keepalive] Alarm stopped");
-		broadcastState();
-		scheduleReconnect();
-	});
+  /**
+   * 接收 MCP Server 下发的捕获配置，切换为武装态。
+   *
+   * 期望格式：
+   * { target: string, types: string[], action_mode: "reload" | "manual" | "record" }
+   */
+  ws.addEventListener("message", (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      console.warn("[WS] Non-JSON message ignored:", event.data);
+      return;
+    }
+    console.log("[WS] Config received →", payload);
+    state.config = payload;
+    state.phase = "ARMED";
+    state.statusMessage = `配置已就绪，目标：${payload.target ?? "未指定"}。点击"开始录制"或按快捷键启动。`;
+    updateBadge("ARMED");
+    broadcastState();
+  });
 
-	ws.addEventListener("error", () => {
-		// error 事件后必跟 close，重连逻辑在 close 处理
-	});
+  ws.addEventListener("close", (event) => {
+    console.warn(
+      `[WS] Disconnected (code=${event.code}). Retry in ${wsRetryDelay}ms...`,
+    );
+    ws = null;
+    state.wsConnected = false;
+    state.statusMessage = `MCP Server 连接断开，已等待${wsRetryDelay / 1000}s，即将开始重连...`;
+    // 不清除 keepalive alarm —— WS 断开后更需要 alarm 兜底唤醒 SW 进行重连
+    broadcastState();
+    scheduleReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    // error 事件后必跟 close，重连逻辑在 close 处理
+  });
 }
 
 function scheduleReconnect() {
-	wsRetryTimer = setTimeout(() => {
-		wsRetryDelay = Math.min(wsRetryDelay + 1000, WS_RETRY_MAX);
-		connectWS();
-	}, wsRetryDelay);
+  // setTimeout 用于 SW 存活期间的快速重连
+  wsRetryTimer = setTimeout(() => {
+    wsRetryDelay = Math.min(wsRetryDelay + 1000, WS_RETRY_MAX);
+    connectWS();
+  }, wsRetryDelay);
+
+  // chrome.alarms 兜底：SW 被挂起后 setTimeout 会丢失，
+  // 用一次性 alarm 确保 SW 被唤醒后仍能触发重连。
+  // chrome.alarms 最小延迟约 30s，作为 setTimeout 的安全网。
+  const delayMinutes = Math.max(wsRetryDelay / 60000, 0.5);
+  chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: delayMinutes });
 }
 
 /**
@@ -255,44 +279,41 @@ function scheduleReconnect() {
  * @returns {boolean}
  */
 function wsSend(data) {
-	if (!ws || ws.readyState !== WebSocket.OPEN) {
-		console.warn("[WS] Cannot send, connection not open");
-		return false;
-	}
-	ws.send(JSON.stringify(data));
-	return true;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[WS] Cannot send, connection not open");
+    return false;
+  }
+  ws.send(JSON.stringify(data));
+  return true;
 }
 
 // ── 状态徽标 ─────────────────────────────────────────────────────────────────
 
 function updateBadge(phase) {
-	const MAP = {
-		UNARMED: {
-			text: "",
-			color: "#6b7280"
-		},
-		ARMED: {
-			text: "RDY",
-			color: "#f59e0b"
-		},
-		CAPTURING: {
-			text: "REC",
-			color: "#ef4444"
-		},
-	};
-	const {
-		text,
-		color
-	} = MAP[phase] ?? MAP.UNARMED;
-	chrome.action.setBadgeText({
-		text
-	});
-	chrome.action.setBadgeBackgroundColor({
-		color
-	});
-	chrome.action.setTitle({
-		title: `DevTools Capturer (${phase})`
-	});
+  const MAP = {
+    UNARMED: {
+      text: "",
+      color: "#6b7280",
+    },
+    ARMED: {
+      text: "RDY",
+      color: "#f59e0b",
+    },
+    CAPTURING: {
+      text: "REC",
+      color: "#ef4444",
+    },
+  };
+  const { text, color } = MAP[phase] ?? MAP.UNARMED;
+  chrome.action.setBadgeText({
+    text,
+  });
+  chrome.action.setBadgeBackgroundColor({
+    color,
+  });
+  chrome.action.setTitle({
+    title: `DevTools Capturer (${phase})`,
+  });
 }
 
 // ── CDP 命令封装 ─────────────────────────────────────────────────────────────
@@ -306,17 +327,26 @@ function updateBadge(phase) {
  * @returns {Promise<object>} CDP 响应 result 对象
  */
 function cdpSend(tabId, method, params = {}) {
-	return new Promise((resolve, reject) => {
-		chrome.debugger.sendCommand({
-			tabId
-		}, method, params, (result) => {
-			if (chrome.runtime.lastError) {
-				reject(new Error(`CDP ${method} failed: ${chrome.runtime.lastError.message}`));
-			} else {
-				resolve(result ?? {});
-			}
-		});
-	});
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand(
+      {
+        tabId,
+      },
+      method,
+      params,
+      (result) => {
+        if (chrome.runtime.lastError) {
+          reject(
+            new Error(
+              `CDP ${method} failed: ${chrome.runtime.lastError.message}`,
+            ),
+          );
+        } else {
+          resolve(result ?? {});
+        }
+      },
+    );
+  });
 }
 
 // ── Debugger 操作 ────────────────────────────────────────────────────────────
@@ -331,51 +361,55 @@ function cdpSend(tabId, method, params = {}) {
  * @param {object} config
  */
 async function attachDebugger(tabId, config) {
-	// 1. attach
-	await new Promise((resolve, reject) => {
-		chrome.debugger.attach({
-			tabId
-		}, DEBUGGER_VER, () => {
-			if (chrome.runtime.lastError) {
-				reject(new Error(chrome.runtime.lastError.message));
-			} else {
-				resolve();
-			}
-		});
-	});
-	console.log(`[Debugger] Attached to tab ${tabId}`);
+  // 1. attach
+  await new Promise((resolve, reject) => {
+    chrome.debugger.attach(
+      {
+        tabId,
+      },
+      DEBUGGER_VER,
+      () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve();
+        }
+      },
+    );
+  });
+  console.log(`[Debugger] Attached to tab ${tabId}`);
 
-	// 2. 开启 Network 域
-	//    maxTotalBufferSize / maxResourceBufferSize 单位 bytes，设为 0 表示不限制
-	await cdpSend(tabId, "Network.enable", {
-		maxTotalBufferSize: 10 * 1024 * 1024, // 10 MB，防止内存暴涨
-		maxResourceBufferSize: 5 * 1024 * 1024,
-	});
-	console.log("[CDP] Network.enable sent");
+  // 2. 开启 Network 域
+  //    maxTotalBufferSize / maxResourceBufferSize 单位 bytes，设为 0 表示不限制
+  await cdpSend(tabId, "Network.enable", {
+    maxTotalBufferSize: 10 * 1024 * 1024, // 10 MB，防止内存暴涨
+    maxResourceBufferSize: 5 * 1024 * 1024,
+  });
+  console.log("[CDP] Network.enable sent");
 
-	// 3. 开启 Log 域（捕获页面级 console 输出及 JS 异常）
-	await cdpSend(tabId, "Log.enable");
-	console.log("[CDP] Log.enable sent");
+  // 3. 开启 Log 域（捕获页面级 console 输出及 JS 异常）
+  await cdpSend(tabId, "Log.enable");
+  console.log("[CDP] Log.enable sent");
 
-	// 4. 如果配置要求抓取性能数据，开启 Tracing 域
-	if (config?.types?.includes("performance")) {
-		await cdpSend(tabId, "Tracing.start", {
-			categories: "-*,devtools.timeline,v8.execute,blink.user_timing,v8",
-			options: "sampling-frequency=10000", // 10kHz 采样
-		});
-		console.log("[CDP] Tracing.start sent");
-	}
+  // 4. 如果配置要求抓取性能数据，开启 Tracing 域
+  if (config?.types?.includes("performance")) {
+    await cdpSend(tabId, "Tracing.start", {
+      categories: "-*,devtools.timeline,v8.execute,blink.user_timing,v8",
+      options: "sampling-frequency=10000", // 10kHz 采样
+    });
+    console.log("[CDP] Tracing.start sent");
+  }
 
-	// 5. 按配置决定是否刷新页面，以便从 navigationStart 起完整捕获
-	if (config?.action_mode === "reload") {
-		chrome.tabs.reload(tabId, {}, () => {
-			if (chrome.runtime.lastError) {
-				console.warn("[Tabs] Reload failed:", chrome.runtime.lastError.message);
-			} else {
-				console.log(`[Tabs] Tab ${tabId} reloaded`);
-			}
-		});
-	}
+  // 5. 按配置决定是否刷新页面，以便从 navigationStart 起完整捕获
+  if (config?.action_mode === "reload") {
+    chrome.tabs.reload(tabId, {}, () => {
+      if (chrome.runtime.lastError) {
+        console.warn("[Tabs] Reload failed:", chrome.runtime.lastError.message);
+      } else {
+        console.log(`[Tabs] Tab ${tabId} reloaded`);
+      }
+    });
+  }
 }
 
 /**
@@ -384,18 +418,24 @@ async function attachDebugger(tabId, config) {
  * @param {number} tabId
  */
 async function detachDebugger(tabId) {
-	return new Promise((resolve) => {
-		chrome.debugger.detach({
-			tabId
-		}, () => {
-			if (chrome.runtime.lastError) {
-				console.warn(`[Debugger] Detach warning (tab ${tabId}):`, chrome.runtime.lastError.message);
-			} else {
-				console.log(`[Debugger] Detached from tab ${tabId}`);
-			}
-			resolve();
-		});
-	});
+  return new Promise((resolve) => {
+    chrome.debugger.detach(
+      {
+        tabId,
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          console.warn(
+            `[Debugger] Detach warning (tab ${tabId}):`,
+            chrome.runtime.lastError.message,
+          );
+        } else {
+          console.log(`[Debugger] Detached from tab ${tabId}`);
+        }
+        resolve();
+      },
+    );
+  });
 }
 
 // ── CDP 事件监听 ─────────────────────────────────────────────────────────────
@@ -407,124 +447,112 @@ async function detachDebugger(tabId) {
  * 避免多 Tab 场景下数据交叉污染。
  */
 chrome.debugger.onEvent.addListener((source, method, params) => {
-	// 只处理当前捕获会话的 Tab
-	if (source.tabId !== state.activeTabId) return;
+  // 只处理当前捕获会话的 Tab
+  if (source.tabId !== state.activeTabId) return;
 
-	switch (method) {
+  switch (method) {
+    // ── Network.requestWillBeSent ─────────────────────────────────────────
+    // 在浏览器即将发出请求时触发，此时尚无响应状态码。
+    // 将基础信息暂存到 requestMap，等待 responseReceived 来补全。
+    case "Network.requestWillBeSent": {
+      const { requestId, request, timestamp, type } = params;
 
-		// ── Network.requestWillBeSent ─────────────────────────────────────────
-		// 在浏览器即将发出请求时触发，此时尚无响应状态码。
-		// 将基础信息暂存到 requestMap，等待 responseReceived 来补全。
-		case "Network.requestWillBeSent": {
-			const {
-				requestId,
-				request,
-				timestamp,
-				type
-			} = params;
+      capture.requestMap.set(requestId, {
+        requestId,
+        url: maskSensitive(request.url),
+        method: request.method,
+        // 请求头脱敏：过滤 Authorization / Cookie
+        headers: maskHeaders(request.headers),
+        // CDP timestamp 单位为秒（浮点），转为毫秒整数便于阅读
+        startTime: Math.round(timestamp * 1000),
+        type: type ?? "Other", // Document / XHR / Fetch / Script / ...
+      });
+      break;
+    }
 
-			capture.requestMap.set(requestId, {
-				requestId,
-				url: maskSensitive(request.url),
-				method: request.method,
-				// 请求头脱敏：过滤 Authorization / Cookie
-				headers: maskHeaders(request.headers),
-				// CDP timestamp 单位为秒（浮点），转为毫秒整数便于阅读
-				startTime: Math.round(timestamp * 1000),
-				type: type ?? "Other", // Document / XHR / Fetch / Script / ...
-			});
-			break;
-		}
+    // ── Network.responseReceived ──────────────────────────────────────────
+    // 收到响应头时触发（响应体可能还在传输中）。
+    // 与 requestMap 中的请求记录合并，计算耗时后推入 network_logs。
+    case "Network.responseReceived": {
+      const { requestId, response, timestamp } = params;
+      const pending = capture.requestMap.get(requestId);
 
-		// ── Network.responseReceived ──────────────────────────────────────────
-		// 收到响应头时触发（响应体可能还在传输中）。
-		// 与 requestMap 中的请求记录合并，计算耗时后推入 network_logs。
-		case "Network.responseReceived": {
-			const {
-				requestId,
-				response,
-				timestamp
-			} = params;
-			const pending = capture.requestMap.get(requestId);
+      if (!pending) {
+        // 扩展 attach 之前已发出的请求，正常情况，静默跳过
+        break;
+      }
 
-			if (!pending) {
-				// 扩展 attach 之前已发出的请求，正常情况，静默跳过
-				break;
-			}
+      const durationMs = Math.round(timestamp * 1000) - pending.startTime;
 
-			const durationMs = Math.round(timestamp * 1000) - pending.startTime;
+      capture.network_logs.push({
+        requestId: pending.requestId,
+        url: pending.url,
+        method: pending.method,
+        type: pending.type,
+        status: response.status,
+        statusText: response.statusText,
+        mimeType: response.mimeType,
+        // 响应头同样需要脱敏（Set-Cookie 等）
+        headers: maskHeaders(response.headers),
+        startTime: pending.startTime,
+        durationMs, // 从发出请求到响应头到达的耗时（不含响应体下载）
+      });
 
-			capture.network_logs.push({
-				requestId: pending.requestId,
-				url: pending.url,
-				method: pending.method,
-				type: pending.type,
-				status: response.status,
-				statusText: response.statusText,
-				mimeType: response.mimeType,
-				// 响应头同样需要脱敏（Set-Cookie 等）
-				headers: maskHeaders(response.headers),
-				startTime: pending.startTime,
-				durationMs, // 从发出请求到响应头到达的耗时（不含响应体下载）
-			});
+      // 请求已完整记录，从暂存 Map 中移除，释放内存
+      capture.requestMap.delete(requestId);
+      break;
+    }
 
-			// 请求已完整记录，从暂存 Map 中移除，释放内存
-			capture.requestMap.delete(requestId);
-			break;
-		}
+    // ── Log.entryAdded ────────────────────────────────────────────────────
+    // 页面调用 console.xxx / JS 运行时错误 / 网络错误均会触发此事件。
+    // 注意：这是 Log 域的聚合事件，比 Runtime.consoleAPICalled 信息更全。
+    case "Log.entryAdded": {
+      const { entry } = params;
+      // entry 结构：{ source, level, text, timestamp, url, lineNumber, stackTrace }
 
-		// ── Log.entryAdded ────────────────────────────────────────────────────
-		// 页面调用 console.xxx / JS 运行时错误 / 网络错误均会触发此事件。
-		// 注意：这是 Log 域的聚合事件，比 Runtime.consoleAPICalled 信息更全。
-		case "Log.entryAdded": {
-			const {
-				entry
-			} = params;
-			// entry 结构：{ source, level, text, timestamp, url, lineNumber, stackTrace }
+      capture.console_logs.push({
+        level: entry.level, // "verbose" | "info" | "warning" | "error"
+        source: entry.source, // "javascript" | "network" | "console-api" | ...
+        // 日志文本中可能包含敏感 token（如 fetch 错误消息中打印了完整 URL + Auth）
+        text: maskSensitive(entry.text),
+        url: entry.url ?? null, // 触发日志的脚本 URL
+        line: entry.lineNumber ?? null,
+        // CDP timestamp 同样是秒级浮点，转为 ISO 字符串便于阅读
+        timestamp: new Date(entry.timestamp * 1000).toISOString(),
+      });
+      break;
+    }
 
-			capture.console_logs.push({
-				level: entry.level, // "verbose" | "info" | "warning" | "error"
-				source: entry.source, // "javascript" | "network" | "console-api" | ...
-				// 日志文本中可能包含敏感 token（如 fetch 错误消息中打印了完整 URL + Auth）
-				text: maskSensitive(entry.text),
-				url: entry.url ?? null, // 触发日志的脚本 URL
-				line: entry.lineNumber ?? null,
-				// CDP timestamp 同样是秒级浮点，转为 ISO 字符串便于阅读
-				timestamp: new Date(entry.timestamp * 1000).toISOString(),
-			});
-			break;
-		}
+    // ── Tracing.dataCollected ─────────────────────────────────────────
+    // 流式透传：收到数据块立刻通过 WS 转发给 Node.js Server，不在内存中留存。
+    case "Tracing.dataCollected": {
+      if (Array.isArray(params.value)) {
+        wsSend({
+          type: "tracing_chunk",
+          data: params.value,
+        });
+      }
+      break;
+    }
 
-		// ── Tracing.dataCollected ─────────────────────────────────────────
-		// 流式透传：收到数据块立刻通过 WS 转发给 Node.js Server，不在内存中留存。
-		case "Tracing.dataCollected": {
-			if (Array.isArray(params.value)) {
-				wsSend({
-					type: "tracing_chunk",
-					data: params.value
-				});
-			}
-			break;
-		}
+    // ── Tracing.tracingComplete ────────────────────────────────────────
+    // 所有数据块已 flush 完毕，通知 Server 可以执行脱水算法。
+    case "Tracing.tracingComplete": {
+      console.log("[CDP] Tracing complete, all chunks streamed to server");
+      wsSend({
+        type: "tracing_complete",
+      });
+      if (capture.tracingCompleteResolve) {
+        capture.tracingCompleteResolve();
+        capture.tracingCompleteResolve = null;
+      }
+      break;
+    }
 
-		// ── Tracing.tracingComplete ────────────────────────────────────────
-		// 所有数据块已 flush 完毕，通知 Server 可以执行脱水算法。
-		case "Tracing.tracingComplete": {
-			console.log("[CDP] Tracing complete, all chunks streamed to server");
-			wsSend({
-				type: "tracing_complete"
-			});
-			if (capture.tracingCompleteResolve) {
-				capture.tracingCompleteResolve();
-				capture.tracingCompleteResolve = null;
-			}
-			break;
-		}
-
-		default:
-			// 其他未关注的 CDP 事件，静默忽略
-			break;
-	}
+    default:
+      // 其他未关注的 CDP 事件，静默忽略
+      break;
+  }
 });
 
 // ── 快捷键处理 ───────────────────────────────────────────────────────────────
@@ -537,134 +565,141 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
  * UNARMED   → 按下：提示等待服务端配置
  */
 async function handleToggleCapture() {
-	console.log(`[Command] toggle-capture triggered, phase=${state.phase}`);
+  console.log(`[Command] toggle-capture triggered, phase=${state.phase}`);
 
-	// ── 情况 1：ARMED → 开始捕获 ───────────────────────────────────────────
-	if (state.phase === "ARMED") {
-		const [tab] = await chrome.tabs.query({
-			active: true,
-			currentWindow: true
-		});
-		if (!tab?.id) {
-			console.error("[Command] No active tab found");
-			return;
-		}
+  // ── 情况 1：ARMED → 开始捕获 ───────────────────────────────────────────
+  if (state.phase === "ARMED") {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (!tab?.id) {
+      console.error("[Command] No active tab found");
+      return;
+    }
 
-		try {
-			resetCapture(); // 清空上一轮残留数据
-			await attachDebugger(tab.id, state.config); // attach + Network.enable + Log.enable
-			state.phase = "CAPTURING";
-			state.activeTabId = tab.id;
-			state.statusMessage = "录制中，请在页面上执行目标操作，完成后再次点击停止。";
-			updateBadge("CAPTURING");
-			broadcastState();
-			console.log(`[State] → CAPTURING (tab=${tab.id})`);
-		} catch (err) {
-			console.error("[Command] Failed to start capture:", err.message);
-			state.statusMessage = `启动失败：${err.message}`;
-			broadcastState();
-			chrome.action.setTitle({
-				title: `DevTools Capturer — Error: ${err.message}`
-			});
-		}
-		return;
-	}
+    try {
+      resetCapture(); // 清空上一轮残留数据
+      await attachDebugger(tab.id, state.config); // attach + Network.enable + Log.enable
+      state.phase = "CAPTURING";
+      state.activeTabId = tab.id;
+      state.statusMessage =
+        "录制中，请在页面上执行目标操作，完成后再次点击停止。";
+      updateBadge("CAPTURING");
+      broadcastState();
+      console.log(`[State] → CAPTURING (tab=${tab.id})`);
+    } catch (err) {
+      console.error("[Command] Failed to start capture:", err.message);
+      state.statusMessage = `启动失败：${err.message}`;
+      broadcastState();
+      chrome.action.setTitle({
+        title: `DevTools Capturer — Error: ${err.message}`,
+      });
+    }
+    return;
+  }
 
-	// ── 情况 2：CAPTURING → 停止捕获并上报 ────────────────────────────────
-	if (state.phase === "CAPTURING") {
-		const tabId = state.activeTabId;
-		const config = state.config;
-		const hasPerformance = config?.types?.includes("performance");
+  // ── 情况 2：CAPTURING → 停止捕获并上报 ────────────────────────────────
+  if (state.phase === "CAPTURING") {
+    const tabId = state.activeTabId;
+    const config = state.config;
+    const hasPerformance = config?.types?.includes("performance");
 
-		// 如果开启了 Tracing，先发送 Tracing.end 并等待所有数据块流式发送完毕
-		if (hasPerformance) {
-			try {
-				state.statusMessage = "正在停止 Tracing 并等待数据流式传输完成...";
-				broadcastState();
+    // 如果开启了 Tracing，先发送 Tracing.end 并等待所有数据块流式发送完毕
+    if (hasPerformance) {
+      try {
+        state.statusMessage = "正在停止 Tracing 并等待数据流式传输完成...";
+        broadcastState();
 
-				// 创建 tracingComplete Promise，设置 15s 超时防止永久挂起
-				const tracingDone = new Promise((resolve) => {
-					capture.tracingCompleteResolve = resolve;
-				});
-				const timeout = new Promise((resolve) => setTimeout(resolve, 15000));
+        // 创建 tracingComplete Promise，设置 15s 超时防止永久挂起
+        const tracingDone = new Promise((resolve) => {
+          capture.tracingCompleteResolve = resolve;
+        });
+        const timeout = new Promise((resolve) => setTimeout(resolve, 15000));
 
-				await cdpSend(tabId, "Tracing.end");
-				console.log("[CDP] Tracing.end sent, waiting for tracingComplete...");
+        await cdpSend(tabId, "Tracing.end");
+        console.log("[CDP] Tracing.end sent, waiting for tracingComplete...");
 
-				await Promise.race([tracingDone, timeout]);
-				console.log("[CDP] Tracing data streaming completed");
-			} catch (err) {
-				console.warn("[Perf] Tracing end/stream failed:", err.message);
-			}
-		}
+        await Promise.race([tracingDone, timeout]);
+        console.log("[CDP] Tracing data streaming completed");
+      } catch (err) {
+        console.warn("[Perf] Tracing end/stream failed:", err.message);
+      }
+    }
 
-		// detach debugger，停止 CDP 事件流
-		await detachDebugger(tabId);
+    // detach debugger，停止 CDP 事件流
+    await detachDebugger(tabId);
 
-		// 将仍在 requestMap 中（已有请求但未收到响应）的条目也纳入结果，
-		// 标记为 status: null，表示请求在捕获结束时尚未完成
-		for (const [, pending] of capture.requestMap) {
-			capture.network_logs.push({
-				...pending,
-				status: null,
-				statusText: "No response received",
-				mimeType: null,
-				headers: pending.headers, // 已在 requestWillBeSent 时脱敏
-				durationMs: null,
-			});
-		}
+    // 将仍在 requestMap 中（已有请求但未收到响应）的条目也纳入结果，
+    // 标记为 status: null，表示请求在捕获结束时尚未完成
+    for (const [, pending] of capture.requestMap) {
+      capture.network_logs.push({
+        ...pending,
+        status: null,
+        statusText: "No response received",
+        mimeType: null,
+        headers: pending.headers, // 已在 requestWillBeSent 时脱敏
+        durationMs: null,
+      });
+    }
 
-		// 打包网络/日志数据并通过 WS 发送给 MCP Server
-		// 注意：Tracing 数据已在 CAPTURING 期间通过流式 tracing_chunk 实时发送，此处不再包含
-		const trace = {
-			type: "capture_result",
-			meta: {
-				capturedAt: new Date().toLocaleString("zh-CN", { hour12: false, timeZoneName: "short" }),
-				tabId,
-				config,
-				source: "chrome-devtools-capturer-extension",
-				stats: {
-					network_count: capture.network_logs.length,
-					console_count: capture.console_logs.length,
-				},
-			},
-			network_logs: capture.network_logs,
-			console_logs: capture.console_logs,
-		};
+    // 打包网络/日志数据并通过 WS 发送给 MCP Server
+    // 注意：Tracing 数据已在 CAPTURING 期间通过流式 tracing_chunk 实时发送，此处不再包含
+    const trace = {
+      type: "capture_result",
+      meta: {
+        capturedAt: new Date().toLocaleString("zh-CN", {
+          hour12: false,
+          timeZoneName: "short",
+        }),
+        tabId,
+        config,
+        source: "chrome-devtools-capturer-extension",
+        stats: {
+          network_count: capture.network_logs.length,
+          console_count: capture.console_logs.length,
+        },
+      },
+      network_logs: capture.network_logs,
+      console_logs: capture.console_logs,
+    };
 
-		const sent = wsSend(trace);
-		const summary = `已上报 ${trace.meta.stats.network_count} 条网络请求、${trace.meta.stats.console_count} 条日志。性能数据已流式传输至服务端处理。`;
-		console.log(`[Command] Trace sent via WS: ${sent}, network=${capture.network_logs.length}, console=${capture.console_logs.length}`);
+    const sent = wsSend(trace);
+    const summary = `已上报 ${trace.meta.stats.network_count} 条网络请求、${trace.meta.stats.console_count} 条日志。性能数据已流式传输至服务端处理。`;
+    console.log(
+      `[Command] Trace sent via WS: ${sent}, network=${capture.network_logs.length}, console=${capture.console_logs.length}`,
+    );
 
-		// 清空状态
-		resetCapture();
-		state.phase = "UNARMED";
-		state.config = null;
-		state.activeTabId = null;
-		state.statusMessage = sent ?
-			`✅ 数据已发送！${summary}请在 Claude 对话中调用 analyze_capture_results 查看分析。` :
-			`⚠️ WS 未连接，数据未能发送。请重启 MCP Server 后重试。`;
-		updateBadge("UNARMED");
-		broadcastState();
-		console.log("[State] → UNARMED");
-		return;
-	}
+    // 清空状态
+    resetCapture();
+    state.phase = "UNARMED";
+    state.config = null;
+    state.activeTabId = null;
+    state.statusMessage = sent
+      ? `✅ 数据已发送！${summary}请在 Claude 对话中调用 analyze_capture_results 查看分析。`
+      : `⚠️ WS 未连接，数据未能发送。请重启 MCP Server 后重试。`;
+    updateBadge("UNARMED");
+    broadcastState();
+    console.log("[State] → UNARMED");
+    return;
+  }
 
-	// ── 情况 3：UNARMED → 提示等待配置 ────────────────────────────────────
-	console.log("[Command] Not armed. Waiting for config from MCP Server...");
-	state.statusMessage = "尚未收到配置，请先在 Claude 对话中调用 prepare_capture_session 工具。";
-	broadcastState();
-	chrome.action.setTitle({
-		title: "DevTools Capturer — Waiting for MCP config..."
-	});
+  // ── 情况 3：UNARMED → 提示等待配置 ────────────────────────────────────
+  console.log("[Command] Not armed. Waiting for config from MCP Server...");
+  state.statusMessage =
+    "尚未收到配置，请先在 Claude 对话中调用 prepare_capture_session 工具。";
+  broadcastState();
+  chrome.action.setTitle({
+    title: "DevTools Capturer — Waiting for MCP config...",
+  });
 }
 
 chrome.commands.onCommand.addListener((command) => {
-	if (command === "toggle-capture") {
-		handleToggleCapture().catch((err) => {
-			console.error("[Command] Unhandled error:", err);
-		});
-	}
+  if (command === "toggle-capture") {
+    handleToggleCapture().catch((err) => {
+      console.error("[Command] Unhandled error:", err);
+    });
+  }
 });
 
 // ── 调试器异常断开监听 ───────────────────────────────────────────────────────
@@ -674,19 +709,21 @@ chrome.commands.onCommand.addListener((command) => {
  * 此时缓冲区数据丢弃，避免下一轮捕获时数据污染。
  */
 chrome.debugger.onDetach.addListener((source, reason) => {
-	if (source.tabId === state.activeTabId) {
-		console.warn(`[Debugger] Externally detached (tab=${source.tabId}, reason=${reason})`);
-		resetCapture();
-		state.phase = "UNARMED";
-		state.config = null;
-		state.activeTabId = null;
-		state.statusMessage = `调试器被外部断开（原因：${reason}），请重新调用 prepare_capture_session 配置后再录制。`;
-		updateBadge("UNARMED");
-		broadcastState();
-		chrome.action.setTitle({
-			title: "DevTools Capturer — Detached externally, please re-arm"
-		});
-	}
+  if (source.tabId === state.activeTabId) {
+    console.warn(
+      `[Debugger] Externally detached (tab=${source.tabId}, reason=${reason})`,
+    );
+    resetCapture();
+    state.phase = "UNARMED";
+    state.config = null;
+    state.activeTabId = null;
+    state.statusMessage = `调试器被外部断开（原因：${reason}），请重新调用 prepare_capture_session 配置后再录制。`;
+    updateBadge("UNARMED");
+    broadcastState();
+    chrome.action.setTitle({
+      title: "DevTools Capturer — Detached externally, please re-arm",
+    });
+  }
 });
 
 // ── Popup 消息处理 ───────────────────────────────────────────────────────────
@@ -698,31 +735,35 @@ chrome.debugger.onDetach.addListener((source, reason) => {
  * TOGGLE_CAPTURE → 执行与快捷键相同的逻辑，返回执行后的新状态快照
  */
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-	if (msg.type === "GET_STATE") {
-		sendResponse(getStateSnapshot());
-		return false; // 同步响应，无需保持通道
-	}
+  if (msg.type === "GET_STATE") {
+    sendResponse(getStateSnapshot());
+    return false; // 同步响应，无需保持通道
+  }
 
-	if (msg.type === "TOGGLE_CAPTURE") {
-		// handleToggleCapture 是 async，需要返回 true 保持消息通道开放，
-		// 等 Promise resolve 后再 sendResponse
-		handleToggleCapture()
-			.catch((err) => console.error("[BG] TOGGLE_CAPTURE error:", err))
-			.finally(() => sendResponse(getStateSnapshot()));
-		return true; // 异步响应
-	}
+  if (msg.type === "TOGGLE_CAPTURE") {
+    // handleToggleCapture 是 async，需要返回 true 保持消息通道开放，
+    // 等 Promise resolve 后再 sendResponse
+    handleToggleCapture()
+      .catch((err) => console.error("[BG] TOGGLE_CAPTURE error:", err))
+      .finally(() => sendResponse(getStateSnapshot()));
+    return true; // 异步响应
+  }
 });
 
 // ── Service Worker 保活 ──────────────────────────────────────────────────────
-// chrome.alarms 即使 SW 被挂起也能唤醒它，用于定期检查并恢复 WS 连接。
+// 保活策略（双重保障）：
+//   1. KEEPALIVE_ALARM（周期性，0.5 分钟）：在初始化时无条件创建，始终运行，
+//      定期唤醒 SW 检查 WS 健康状态，防止 SW 永久挂起导致 WS 断开后无法恢复。
+//   2. RECONNECT_ALARM（一次性）：WS 断开时由 scheduleReconnect 创建，
+//      作为 setTimeout 的兜底——SW 挂起后 setTimeout 会丢失，alarm 不会。
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-	if (alarm.name === KEEPALIVE_ALARM) {
-		if (!ws || ws.readyState !== WebSocket.OPEN) {
-			console.log("[Keepalive] WS disconnected, reconnecting...");
-			connectWS();
-		}
-	}
+  if (alarm.name === KEEPALIVE_ALARM || alarm.name === RECONNECT_ALARM) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.log(`[Alarm:${alarm.name}] WS not connected, reconnecting...`);
+      connectWS();
+    }
+  }
 });
 
 // ── 初始化 ───────────────────────────────────────────────────────────────────
@@ -730,11 +771,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 console.log("[BG] Service worker started");
 updateBadge("UNARMED");
 
+// 无条件创建 keepalive alarm，确保 SW 不会被永久挂起。
+// chrome.alarms.create 对同名 alarm 是幂等的（重复创建会重置计时器），安全。
+chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+console.log("[Keepalive] Alarm ensured");
+
 // Service Worker 每次唤醒都会执行此初始化块。
 // 检查 WS 是否已断开（被挂起期间系统强制切断），需要时自动重连。
 if (!ws || ws.readyState !== WebSocket.OPEN) {
-	state.wsConnected = false;
-	connectWS();
+  state.wsConnected = false;
+  connectWS();
 } else {
-	console.log("[BG] WebSocket still connected, skipping reconnect");
+  console.log("[BG] WebSocket still connected, skipping reconnect");
 }
