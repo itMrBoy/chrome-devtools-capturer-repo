@@ -71,7 +71,7 @@ git clone https://github.com/itMrBoy/chrome-devtools-capturer-repo.git
 ## 卸载
 
 ```bash
-/plugin uninstall chrome-devtools-capturer@chrome-devtools-capturer-repo
+/plugin uninstall chrome-devtools-capturer@chrome-devtools-capturer-repo --scope user
 ```
 
 ## 使用场景
