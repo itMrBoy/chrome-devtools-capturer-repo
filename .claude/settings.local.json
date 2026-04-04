@@ -1,11 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__cleanup_vibe_workspace",
+      "Bash(python3:*)",
+      "Bash(python -c \":*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:ts.sdk.modelcontextprotocol.io)",
+      "Read(//c/Users/admin/.claude/**)",
+      "Read(//c/Users/admin/**)",
+      "Read(//c/Users/admin/AppData/Roaming/Claude/**)",
+      "Bash(claude mcp:*)",
       "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__analyze_capture_results",
       "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__prepare_capture_session",
-      "Bash(python3:*)",
-      "Bash(python -c \":*)"
+      "WebFetch(domain:developer.chrome.com)",
+      "Bash(node -c chrome-extension/utils/keepAlive.js)",
+      "Bash(node -c skills/scripts/mcp-server/index.js)",
+      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__wait_for_capture_result",
+      "Bash(netstat -ano)",
+      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__cleanup_vibe_workspace"
     ]
   }
 }
