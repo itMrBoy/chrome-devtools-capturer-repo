@@ -7,20 +7,24 @@ chrome-extension/
 ├── manifest.json
 ├── popup.html
 ├── popup.js
-└── background.js
+├── background.js
+└── utils/
+    ├── extractLongTasks.js
+    └── keepAlive.js          ← 新增：SW 保活模块
 ```
 
 ## 交互方式
 
 点击扩展图标打开弹窗，弹窗实时显示当前状态和操作按钮：
 
-| 状态 | 弹窗提示 | 按钮 |
-|---|---|---|
-| `UNARMED` | 等待 MCP Server 下发配置 | 禁用（灰色） |
-| `ARMED` | 配置已就绪，目标：xxx | ▶ 开始录制（绿色） |
-| `CAPTURING` | 录制中，请执行目标操作… | ⏹ 停止并上报（红色） |
+| 状态        | 弹窗提示                 | 按钮                 |
+| ----------- | ------------------------ | -------------------- |
+| `UNARMED`   | 等待 MCP Server 下发配置 | 禁用（灰色）         |
+| `ARMED`     | 配置已就绪，目标：xxx    | ▶ 开始录制（绿色）   |
+| `CAPTURING` | 录制中，请执行目标操作…  | ⏹ 停止并上报（红色） |
 
 弹窗同时显示：
+
 - MCP Server 连接状态（绿点/灰点）
 - 最新操作结果（成功上报条数、错误原因等）
 - 快捷键提示 `Alt+Shift+C`
@@ -29,7 +33,7 @@ chrome-extension/
 
 ```
 MCP Server (Node.js)
-    │  ws://localhost:6666
+    │  ws://localhost:8765
     │  下发配置 ──────────────────────────────────► background.js
     │                                                    │
     │                                             chrome.debugger.attach
@@ -44,19 +48,19 @@ MCP Server (Node.js)
 
 ## 状态机
 
-| 状态 | 徽标 | 含义 |
-|---|---|---|
-| `UNARMED` | 无（灰） | 初始态，等待 MCP Server 下发配置 |
-| `ARMED` | `RDY`（琥珀） | 已收到配置，等待快捷键触发 |
-| `CAPTURING` | `REC`（红） | debugger 已 attach，正在录制 |
+| 状态        | 徽标          | 含义                             |
+| ----------- | ------------- | -------------------------------- |
+| `UNARMED`   | 无（灰）      | 初始态，等待 MCP Server 下发配置 |
+| `ARMED`     | `RDY`（琥珀） | 已收到配置，等待快捷键触发       |
+| `CAPTURING` | `REC`（红）   | debugger 已 attach，正在录制     |
 
 ## 快捷键
 
-| 按键 | 当前状态 | 行为 |
-|---|---|---|
-| `Alt+Shift+C` | `ARMED` | attach debugger，开启 Network + Log 域，切换为 `CAPTURING` |
-| `Alt+Shift+C` | `CAPTURING` | detach debugger，打包数据通过 WS 上报，切换为 `UNARMED` |
-| `Alt+Shift+C` | `UNARMED` | 提示等待配置，无操作 |
+| 按键          | 当前状态    | 行为                                                       |
+| ------------- | ----------- | ---------------------------------------------------------- |
+| `Alt+Shift+C` | `ARMED`     | attach debugger，开启 Network + Log 域，切换为 `CAPTURING` |
+| `Alt+Shift+C` | `CAPTURING` | detach debugger，打包数据通过 WS 上报，切换为 `UNARMED`    |
+| `Alt+Shift+C` | `UNARMED`   | 提示等待配置，无操作                                       |
 
 > 快捷键可在 `chrome://extensions/shortcuts` 中自定义。
 
@@ -74,17 +78,17 @@ MCP Server (Node.js)
 
 ### Network
 
-| CDP 事件 | 提取字段 |
-|---|---|
-| `Network.requestWillBeSent` | `url` `method` `headers` `startTime` `type` |
-| `Network.responseReceived` | `status` `statusText` `mimeType` `headers` `durationMs` |
+| CDP 事件                    | 提取字段                                                |
+| --------------------------- | ------------------------------------------------------- |
+| `Network.requestWillBeSent` | `url` `method` `headers` `startTime` `type`             |
+| `Network.responseReceived`  | `status` `statusText` `mimeType` `headers` `durationMs` |
 
 > 两个事件通过 `requestId` 关联合并。捕获结束时仍无响应的请求以 `status: null` 标记保留。
 
 ### Console
 
-| CDP 事件 | 提取字段 |
-|---|---|
+| CDP 事件         | 提取字段                                         |
+| ---------------- | ------------------------------------------------ |
 | `Log.entryAdded` | `level` `source` `text` `url` `line` `timestamp` |
 
 `level` 枚举：`verbose` / `info` / `warning` / `error`
@@ -95,13 +99,13 @@ MCP Server (Node.js)
 
 敏感字段在写入结果前自动替换，不上报原始值：
 
-| 场景 | 规则 |
-|---|---|
-| 请求头 `Authorization` | 值替换为 `[MASKED]` |
-| 请求头 `Cookie` | 值替换为 `[MASKED]` |
-| 响应头 `Set-Cookie` | 值替换为 `[MASKED]` |
+| 场景                                     | 规则                        |
+| ---------------------------------------- | --------------------------- |
+| 请求头 `Authorization`                   | 值替换为 `[MASKED]`         |
+| 请求头 `Cookie`                          | 值替换为 `[MASKED]`         |
+| 响应头 `Set-Cookie`                      | 值替换为 `[MASKED]`         |
 | 日志文本中的 `Authorization: Bearer xxx` | token 部分替换为 `[MASKED]` |
-| 日志文本中的 `Cookie: xxx` | 值替换为 `[MASKED]` |
+| 日志文本中的 `Cookie: xxx`               | 值替换为 `[MASKED]`         |
 
 ## 上报数据结构
 
@@ -150,9 +154,34 @@ MCP Server (Node.js)
 
 ## 异常处理
 
-| 场景 | 处理方式 |
-|---|---|
-| `chrome.debugger` 被 DevTools 占用 | 捕获错误，通过 action title 提示用户，不崩溃 |
-| 外部强制 detach（用户打开 DevTools） | 监听 `onDetach` 事件，自动回退到 `UNARMED` |
-| WS 连接断开 | 指数退避重连（1s → 2s → … 上限 30s） |
-| 请求发出但无响应（捕获期间未完成） | 以 `status: null` 保留在结果中，不丢弃 |
+| 场景                                 | 处理方式                                     |
+| ------------------------------------ | -------------------------------------------- |
+| `chrome.debugger` 被 DevTools 占用   | 捕获错误，通过 action title 提示用户，不崩溃 |
+| 外部强制 detach（用户打开 DevTools） | 监听 `onDetach` 事件，自动回退到 `UNARMED`   |
+| WS 连接断开                          | 指数退避重连（1s → 2s → … 上限 30s）         |
+| 请求发出但无响应（捕获期间未完成）   | 以 `status: null` 保留在结果中，不丢弃       |
+
+## Service Worker 保活机制
+
+### 问题背景
+
+Chrome Manifest V3 的 Service Worker 在 30 秒无活动后会被浏览器挂起。挂起后：
+
+- WebSocket 连接在 OS 层面仍然 ESTABLISHED，但 SW 无法处理收到的消息
+- MCP Server 调用 broadcast() 发送配置时，`readyState === OPEN` 返回 true（被 stale connection 骗了），实际消息丢失
+- SW 唤醒后需要重建 WebSocket 连接，之前的配置已不可恢复
+
+### 解决方案（双层保活）
+
+代码封装在 `utils/keepAlive.js`，职责分离：
+
+| 场景        | 策略                          | 机制                                                                    |
+| ----------- | ----------------------------- | ----------------------------------------------------------------------- |
+| WS 已连接   | WebSocket keepalive ping（每 20s） | Chrome 116+ 原生支持：WS 消息收发重置 SW idle timer                |
+| WS 已断开   | chrome.alarms 低频唤醒（每 30s）   | alarm 唤醒 SW 后尝试重连，连上后切换为 keepalive 模式              |
+| `CAPTURING` | chrome.debugger 原生保活      | Chrome 118+ 活跃的 debugger 会话自动保持 SW 存活                        |
+
+### 参考
+
+- https://developer.chrome.com/docs/extensions/how-to/web-platform/websockets
+- https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle

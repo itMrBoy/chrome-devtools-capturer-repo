@@ -20,14 +20,22 @@
  *         → Server 端执行 extractLongTasks 脱水算法
  */
 
+// ── 依赖导入 ────────────────────────────────────────────────────────────────
+
+import {
+  startKeepAlive,
+  stopKeepAlive,
+  scheduleReconnectAlarm,
+  clearReconnectAlarm,
+  initAlarmListener,
+} from "./utils/keepAlive.js";
+
 // ── 常量 ────────────────────────────────────────────────────────────────────
 
 const WS_URL = "ws://localhost:8765";
 const WS_RETRY_BASE = 1000; // 初始重连间隔 1s
 const WS_RETRY_MAX = 30000; // 最大重连间隔 30s
 const DEBUGGER_VER = "1.3"; // CDP 协议版本
-const KEEPALIVE_ALARM = "ws-keepalive"; // Service Worker 保活闹钟名（常驻）
-const RECONNECT_ALARM = "ws-reconnect"; // 重连闹钟名（SW 挂起时兜底 setTimeout）
 
 // ── 扩展状态 ─────────────────────────────────────────────────────────────────
 
@@ -214,8 +222,9 @@ function connectWS() {
     wsRetryDelay = WS_RETRY_BASE;
     state.wsConnected = true;
     state.statusMessage = "MCP Server 已连接，等待下发配置...";
-    // 连接成功，清除重连兜底 alarm（keepalive alarm 保持不变）
-    chrome.alarms.clear(RECONNECT_ALARM);
+    // 连接成功：启动 WS keepalive 保活，清除重连兜底 alarm
+    startKeepAlive(ws);
+    clearReconnectAlarm();
     broadcastState();
   });
 
@@ -247,8 +256,9 @@ function connectWS() {
     );
     ws = null;
     state.wsConnected = false;
-    state.statusMessage = `MCP Server 连接断开，已等待${wsRetryDelay / 1000}s，即将开始重连...`;
-    // 不清除 keepalive alarm —— WS 断开后更需要 alarm 兜底唤醒 SW 进行重连
+    state.statusMessage = `MCP Server 连接断开，${wsRetryDelay / 1000}s 后重连...`;
+    // WS 断开：停止 keepalive，切换为 alarm 兜底重连模式
+    stopKeepAlive();
     broadcastState();
     scheduleReconnect();
   });
@@ -266,10 +276,8 @@ function scheduleReconnect() {
   }, wsRetryDelay);
 
   // chrome.alarms 兜底：SW 被挂起后 setTimeout 会丢失，
-  // 用一次性 alarm 确保 SW 被唤醒后仍能触发重连。
-  // chrome.alarms 最小延迟约 30s，作为 setTimeout 的安全网。
-  const delayMinutes = Math.max(wsRetryDelay / 60000, 0.5);
-  chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: delayMinutes });
+  // alarm 确保 SW 被唤醒后仍能触发重连（最小延迟约 30s）
+  scheduleReconnectAlarm(wsRetryDelay);
 }
 
 /**
@@ -750,31 +758,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
-// ── Service Worker 保活 ──────────────────────────────────────────────────────
-// 保活策略（双重保障）：
-//   1. KEEPALIVE_ALARM（周期性，0.5 分钟）：在初始化时无条件创建，始终运行，
-//      定期唤醒 SW 检查 WS 健康状态，防止 SW 永久挂起导致 WS 断开后无法恢复。
-//   2. RECONNECT_ALARM（一次性）：WS 断开时由 scheduleReconnect 创建，
-//      作为 setTimeout 的兜底——SW 挂起后 setTimeout 会丢失，alarm 不会。
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === KEEPALIVE_ALARM || alarm.name === RECONNECT_ALARM) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.log(`[Alarm:${alarm.name}] WS not connected, reconnecting...`);
-      connectWS();
-    }
-  }
-});
-
 // ── 初始化 ───────────────────────────────────────────────────────────────────
 
 console.log("[BG] Service worker started");
 updateBadge("UNARMED");
 
-// 无条件创建 keepalive alarm，确保 SW 不会被永久挂起。
-// chrome.alarms.create 对同名 alarm 是幂等的（重复创建会重置计时器），安全。
-chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
-console.log("[Keepalive] Alarm ensured");
+// 注册 alarm 监听器（WS 断开期间的重连兜底）
+initAlarmListener(() => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    connectWS();
+  }
+});
 
 // Service Worker 每次唤醒都会执行此初始化块。
 // 检查 WS 是否已断开（被挂起期间系统强制切断），需要时自动重连。

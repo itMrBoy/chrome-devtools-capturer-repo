@@ -10,11 +10,12 @@ Claude Code 的浏览器调试 Skill —— 通过 MCP Server + Chrome 扩展，
 └─────────────┘               └──────────────┘             └──────────────┘
 ```
 
-Skill 编排三步闭环工作流：
+Skill 编排四步自动闭环工作流：
 
 1. **`prepare_capture_session`** — 下发捕获配置给 Chrome 扩展
-2. **`analyze_capture_results`** — 读取扩展上报的运行时数据供 Claude 分析
-3. **`cleanup_vibe_workspace`** — 阅后即焚，清理旧数据防止上下文污染
+2. **`wait_for_capture_result`** — 自动阻塞等待扩展上报数据，无需用户手动确认
+3. **`analyze_capture_results`** — 读取数据供分析（保留兼容手动模式）
+4. **`cleanup_vibe_workspace`** — 阅后即焚，清理旧数据防止上下文污染
 
 ## 前置条件：安装 Chrome 扩展
 
@@ -90,6 +91,21 @@ git clone https://github.com/itMrBoy/chrome-devtools-capturer-repo.git
 - "看看控制台有没有报错"
 - "分析一下页面性能"
 
+## 相比 Chrome DevTools 的优势
+
+- **用户自主控制捕获时段** — 用户通过快捷键手动开始/停止录制，精确控制需要分析的时间段，避免无关数据干扰分析结论
+- **AI 驱动的自动分析** — 捕获数据自动流入 Claude 进行智能分析，无需人工解读 Network/Performance 面板
+- **数据脱敏** — Authorization、Cookie 等敏感信息在采集阶段自动替换为 `[MASKED]`，安全传输给 AI
+- **性能数据脱水** — 原始 Tracing 数据（通常数十 MB）经 extractLongTasks 算法提炼为极简的长任务报告，只保留有诊断价值的信息
+- **不依赖外部 CDP 端口** — 许多 Chromium 二开浏览器（如企业定制浏览器）禁用了 `--remote-debugging-port` 等对外暴露 CDP 的能力。本工具通过 `chrome.debugger` 扩展 API 在浏览器内部访问 CDP，数据经 WebSocket 传给 MCP Server，整条链路无需浏览器开放远程调试端口
+
+## Token 消耗提醒
+
+- 自动化工作流中 `wait_for_capture_result` 会将完整捕获数据返回给 Claude 上下文
+- 捕获数据量取决于录制时长和页面复杂度（网络请求密集的页面可能产生数百条记录）
+- Skill 默认使用 subAgent 在隔离上下文中分析数据，避免污染主对话 token 预算
+- 建议：录制时间不宜过长，聚焦于需要分析的具体操作
+
 ## 项目结构
 
 ```
@@ -108,6 +124,8 @@ chrome-devtools-capturer/
 │   │   └── package-lock.json
 │   └── .vibeDevtools/            # 运行时工作区（自动创建）
 │       └── latest_trace.json     # 捕获结果（阅后即焚）
+├── chrome-extension/
+│   └── utils/                    # 扩展工具模块（extractLongTasks、keepAlive 等）
 ├── README.md
 └── LICENSE
 ```
