@@ -2,6 +2,11 @@
 
 Claude Code 的浏览器调试 Skill —— 通过 MCP Server + Chrome 扩展，让 Claude 能够直接捕获和分析浏览器运行时数据（网络请求、控制台日志、性能 Tracing）。
 
+## 写在前面
+
+本plugin为claude code版本, 如果你需要codex\cursor\OpenCode\Antigravity等版本, 欢迎使用我们([tokenroll](https://github.com/TokenRollAI)) 开源的 [acplugin](https://github.com/TokenRollAI/acplugin.git) 工具进行转换。
+
+
 ## 工作原理
 
 ```
