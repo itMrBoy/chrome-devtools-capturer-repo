@@ -399,6 +399,21 @@ async function attachDebugger(tabId, config) {
   await cdpSend(tabId, "Log.enable");
   console.log("[CDP] Log.enable sent");
 
+  // 3.1 启用 Violation 监控（长任务、长布局、阻塞事件等性能违规）
+  //     threshold 单位为 ms，超过阈值的违规会通过 Log.entryAdded (source:"violation") 上报
+  await cdpSend(tabId, "Log.startViolationsReport", {
+    config: [
+      { name: "longTask", threshold: 50 },
+      { name: "longLayout", threshold: 30 },
+      { name: "blockedEvent", threshold: 100 },
+      { name: "blockedParser", threshold: -1 },
+      { name: "handler", threshold: 150 },
+      { name: "discouragedAPIUse", threshold: -1 },
+      { name: "recurringHandler", threshold: 50 },
+    ],
+  });
+  console.log("[CDP] Log.startViolationsReport sent");
+
   // 4. 如果配置要求抓取性能数据，开启 Tracing 域
   if (config?.types?.includes("performance")) {
     await cdpSend(tabId, "Tracing.start", {
@@ -673,7 +688,17 @@ async function handleToggleCapture() {
     };
 
     const sent = wsSend(trace);
-    const summary = `已上报 ${trace.meta.stats.network_count} 条网络请求、${trace.meta.stats.console_count} 条日志。性能数据已流式传输至服务端处理。`;
+    let summary = [`已上报`];
+    if (trace.meta.config.types.includes("network")) {
+      summary.push(`【 ${trace.meta.stats.network_count} 】 条 network 请求`);
+    }
+    if (trace.meta.config.types.includes("console")) {
+      summary.push(`【 ${trace.meta.stats.console_count} 】 条 console 日志`);
+    }
+    if (trace.meta.config.types.includes("performance")) {
+      summary.push("性能数据已流式传输至服务端处理。");
+    }
+    summary = summary.join(", ");
     console.log(
       `[Command] Trace sent via WS: ${sent}, network=${capture.network_logs.length}, console=${capture.console_logs.length}`,
     );

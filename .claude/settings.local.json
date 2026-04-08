@@ -17,7 +17,9 @@
       "Bash(node -c skills/scripts/mcp-server/index.js)",
       "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__wait_for_capture_result",
       "Bash(netstat -ano)",
-      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__cleanup_vibe_workspace"
+      "mcp__plugin_chrome-devtools-capturer_chrome-devtools-capturer__cleanup_vibe_workspace",
+      "Bash(node -e ':*)",
+      "WebFetch(domain:chromedevtools.github.io)"
     ]
   }
 }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome DevTools Capturer",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Captures DevTools data and forwards it to the local MCP Server via WebSocket.",
 
   "permissions": ["debugger", "tabs", "activeTab", "alarms"],
