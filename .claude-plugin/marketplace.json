@@ -1,7 +1,8 @@
 {
-  "version": "1.0",
   "name": "chrome-devtools-capturer-plugin",
-  "description": "Chrome DevTools Capturer plugin marketplace",
+  "metadata": {
+    "description": "Chrome DevTools Capturer plugin marketplace"
+  },
   "owner": {
     "name": "itMrBoy"
   },
